@@ -1,5 +1,5 @@
 # =============================================================================
-# 04_compute_THI_deltas.R
+# 05_compute_THI_deltas.R
 # Calcula el THI (hist y pred) y las deltas de dias de estres por especie,
 # metodo y categoria. Itera sobre todos los modelos y guarda un RDS por modelo.
 # =============================================================================
