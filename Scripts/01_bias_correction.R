@@ -71,14 +71,148 @@ dir.create(diro.bc, recursive = TRUE, showWarnings = FALSE)
 
 
 ################################################################################
-# 3. FUNCIONES
+# 3. LIBRERIAS Y FUNCIONES
 ################################################################################
 
-script.bc <- file.path(dir.project, "Scripts", "funciones_bc.R")
-if (!file.exists(script.bc)) {
-  script.bc <- file.path(dir.project, "R", "funciones_bc.R")
+library(transformeR)
+library(downscaleR)
+
+# Transformacion logit para variables acotadas entre 0 y 100, como hurs.
+to_logit <- function(grid, eps = 1e-5) {
+  x <- grid$Data / 100
+  x <- pmin(pmax(x, eps), 1 - eps)
+  grid$Data <- qlogis(x)
+  grid
 }
-source(script.bc)
+
+# Transformacion inversa del logit.
+from_logit <- function(grid) {
+  grid$Data <- plogis(grid$Data) * 100
+  grid
+}
+
+# Guarda cada metodo de correccion de sesgo en un archivo .rds.
+save_bc_outputs <- function(met, diro, suffix) {
+  dir.create(diro, recursive = TRUE, showWarnings = FALSE)
+
+  for (m in names(met)) {
+    saveRDS(
+      met[[m]],
+      file = file.path(diro, paste0(m, "_", suffix, ".rds"))
+    )
+  }
+}
+
+# Aplica los metodos de correccion de sesgo (univariados y multivariados)
+# a un modelo, para un periodo historico y un periodo futuro/GWL dados.
+methods_bc <- function(grid_obs, grid_rcm, grid_rcp,
+                       methods = c("eqm", "mbcn", "mbcr", "mbcp", "qdm"),
+                       years_hist, years_pred,
+                       LatLim = NULL, LonLim = NULL,
+                       folds = NULL, iter = 20, diro = NULL) {
+
+  vars0 <- getVarNames(grid_obs)
+  vars <- tolower(vars0)
+  methods <- tolower(methods)
+
+  res <- list()
+
+  # Datos historicos simulados.
+  x_list <- lapply(vars, function(v) {
+    subsetGrid(grid_rcm, var = v, years = years_hist)
+  })
+  names(x_list) <- vars
+
+  # Observaciones historicas.
+  y_list <- lapply(vars, function(v) {
+    subsetGrid(grid_obs, var = v, years = years_hist)
+  })
+  names(y_list) <- vars
+
+  # Datos a corregir, normalmente futuro/proyeccion.
+  newdata <- lapply(vars, function(v) {
+    subsetGrid(grid_rcp, var = v, years = years_pred)
+  })
+  names(newdata) <- vars
+
+  # Metodos univariados.
+  for (m in methods) {
+    if (m %in% c("eqm", "qdm")) {
+      corrected <- lapply(vars, function(v) {
+        biasCorrection(
+          y = y_list[[v]],
+          x = x_list[[v]],
+          newdata = newdata[[v]],
+          wet.threshold = if (v == "pr") 0.1 else NULL,
+          precipitation = (v == "pr"),
+          method = m,
+          cross.val = if (!is.null(folds)) "kfold" else NULL,
+          folds = folds
+        )
+      })
+
+      names(corrected) <- vars
+      res[[m]] <- makeMultiGrid(corrected)
+    }
+  }
+
+  # Metodos multivariados.
+  mbc <- intersect(methods, c("mbcp", "mbcr", "mbcn"))
+
+  for (m in mbc) {
+    rot.seq <- replicate(iter, rot.random(length(vars)), simplify = FALSE)
+    ratio.seq <- vars %in% c("pr", "windsfc")
+
+    mbc.args <- if (m == "mbcn") {
+      list(
+        iter = iter,
+        rot.seq = rot.seq,
+        ratio.seq = ratio.seq,
+        trace = 0.1
+      )
+    } else {
+      list(
+        iter = iter,
+        ratio.seq = ratio.seq,
+        trace = 0.1
+      )
+    }
+
+    y_use <- y_list
+    x_use <- x_list
+    newdata_use <- newdata
+
+    # Para MBCn, la humedad relativa se transforma a la escala real mediante logit.
+    if (m == "mbcn" && "hurs" %in% vars) {
+      y_use[["hurs"]] <- to_logit(y_use[["hurs"]])
+      x_use[["hurs"]] <- to_logit(x_use[["hurs"]])
+      newdata_use[["hurs"]] <- to_logit(newdata_use[["hurs"]])
+    }
+
+    bc <- biasCorrection(
+      y = y_use,
+      x = x_use,
+      newdata = newdata_use,
+      wet.threshold = if ("pr" %in% vars) 0.1 else NULL,
+      precipitation = ("pr" %in% vars),
+      mbc.args = mbc.args,
+      method = m,
+      cross.val = if (!is.null(folds)) "kfold" else NULL,
+      folds = folds
+    )
+
+    names(bc) <- vars
+
+    # Se vuelve a pasar hurs a porcentaje.
+    if (m == "mbcn" && "hurs" %in% vars) {
+      bc[["hurs"]] <- from_logit(bc[["hurs"]])
+    }
+
+    res[[m]] <- makeMultiGrid(bc)
+  }
+
+  res
+}
 
 
 ################################################################################
