@@ -1,5 +1,5 @@
 # =============================================================================
-# 02_plot_THI_deltas.R
+# 03_plot_THI_deltas.R
 # Lee los resultados calculados en 04_compute_THI_deltas.R y genera un PNG
 # por especie con: (1) mapas principales, (2) diff MBCn-QDM, (3) diff MBCn-EQM.
 # =============================================================================
